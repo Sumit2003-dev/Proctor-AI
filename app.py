@@ -2,39 +2,48 @@
 
 Features:
 - Live webcam streaming with real-time HUD annotations.
+- MediaPipe Face Mesh sustained lookaway gaze tracking (>2.0s).
+- Acoustic / microphone monitoring for speech and whispering detection.
 - Active alert panel and 30-second rolling suspicion score gauge.
-- Sidebar controls for detection sensitivity and duration thresholds.
-- Dynamic alert history log table with CSV download.
-- Graceful handling of camera-not-found and fallback testing modes.
+- Sidebar controls for detection sensitivity, audio threshold, and duration thresholds.
+- Dynamic alert history log table with CSV and PDF Audit Report export.
+- Evidentiary snapshot capture and inspection.
 """
 
+import datetime
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import time
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
 
 import cv2
+import numpy as np
 import pandas as pd
 import streamlit as st
 import torch
 torch.set_num_threads(1)
 from PIL import Image
 
+from audio_monitor import AudioProctor
 from config import (
+    AUDIO_CONFIG,
     DEFAULT_LOG_PATH,
     DEFAULT_MODEL_NAME,
     DETECTION_CONFIG,
     SCORING_CONFIG,
+    SNAPSHOTS_DIR,
 )
 from detector import ProctorDetector
 from logger import AlertLogger
+from report import generate_pdf_report
 from scoring import SuspicionScorer
 
 # Page configuration
 st.set_page_config(
-    page_title="ProctorAI - Real-Time Exam Proctoring",
+    page_title="ProctorAI - Multi-Modal Exam Proctoring",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -61,16 +70,6 @@ st.markdown(
     .status-normal { color: #28a745; border: 2px solid #28a745; background-color: rgba(40, 167, 69, 0.1); }
     .status-warning { color: #fd7e14; border: 2px solid #fd7e14; background-color: rgba(253, 126, 20, 0.1); }
     .status-danger  { color: #dc3545; border: 2px solid #dc3545; background-color: rgba(220, 53, 69, 0.1); }
-    .alert-pill {
-        display: inline-block;
-        padding: 4px 10px;
-        margin: 3px;
-        border-radius: 12px;
-        font-size: 0.85rem;
-        font-weight: 600;
-        background-color: #dc3545;
-        color: white;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -81,6 +80,16 @@ st.markdown(
 def load_detector() -> ProctorDetector:
     """Loads and caches the ProctorDetector instance."""
     return ProctorDetector(model_path=DEFAULT_MODEL_NAME, config=DETECTION_CONFIG)
+
+
+@st.cache_resource
+def load_audio_proctor() -> AudioProctor:
+    """Loads and caches the AudioProctor instance."""
+    return AudioProctor(
+        sample_rate=AUDIO_CONFIG.SAMPLE_RATE,
+        default_threshold=AUDIO_CONFIG.DEFAULT_RMS_THRESHOLD,
+        sustained_seconds=AUDIO_CONFIG.SUSTAINED_AUDIO_SECONDS,
+    )
 
 
 def get_scorer() -> SuspicionScorer:
@@ -97,13 +106,31 @@ def get_logger() -> AlertLogger:
     return st.session_state.logger
 
 
+def init_session_metadata():
+    """Initializes session start time and metadata if missing."""
+    if "session_start" not in st.session_state:
+        st.session_state.session_start = datetime.datetime.now()
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = f"EXAM-{int(time.time())}"
+    if "peak_score" not in st.session_state:
+        st.session_state.peak_score = 0.0
+    if "evidence_snapshots" not in st.session_state:
+        st.session_state.evidence_snapshots = []
+
+
 def render_sidebar():
     """Renders configuration and control widgets in the sidebar."""
     st.sidebar.title("🛡️ ProctorAI Controls")
-    st.sidebar.markdown("Configure proctoring sensitivity & thresholds.")
+    st.sidebar.markdown("Configure multi-modal proctoring thresholds.")
 
-    # Sensitivity Sliders
-    st.sidebar.subheader("Detection Sensitivity")
+    # Candidate Profile
+    st.sidebar.subheader("Candidate Session")
+    candidate_name = st.sidebar.text_input("Candidate Name", value="John Doe")
+    session_id = st.session_state.get("session_id", "EXAM-1001")
+    st.sidebar.caption(f"Session ID: `{session_id}`")
+
+    # Vision Sensitivity Sliders
+    st.sidebar.subheader("Vision Sensitivity")
     conf_thresh = st.sidebar.slider(
         "YOLO Confidence Threshold",
         min_value=0.20,
@@ -131,8 +158,30 @@ def render_sidebar():
         help="Alert only triggers if candidate looks away for longer than this duration.",
     )
 
+    # Audio Proctoring Controls
+    st.sidebar.subheader("Acoustic Monitoring")
+    audio_proctor = load_audio_proctor()
+    enable_audio = st.sidebar.checkbox(
+        "Enable Audio/Whisper Detection",
+        value=audio_proctor.hardware_available,
+        disabled=not audio_proctor.hardware_available,
+        help="Detects candidate speaking, whispering, or external verbal coaching.",
+    )
+    if not audio_proctor.hardware_available:
+        st.sidebar.caption("⚠️ No microphone device detected.")
+
+    audio_thresh = st.sidebar.slider(
+        "Microphone Sensitivity (RMS)",
+        min_value=0.01,
+        max_value=0.15,
+        value=float(AUDIO_CONFIG.DEFAULT_RMS_THRESHOLD),
+        step=0.01,
+        help="Lower value increases microphone sensitivity.",
+    )
+    audio_proctor.threshold = audio_thresh
+
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Data Export & Session")
+    st.sidebar.subheader("Reports & Exports")
 
     alert_logger = get_logger()
     csv_bytes = alert_logger.get_csv_bytes()
@@ -140,30 +189,67 @@ def render_sidebar():
     st.sidebar.download_button(
         label="📥 Download Alert Log (CSV)",
         data=csv_bytes,
-        file_name="proctor_alerts.csv",
+        file_name=f"{session_id}_alerts.csv",
         mime="text/csv",
         use_container_width=True,
     )
 
-    if st.sidebar.button("🔄 Reset Suspicion Score & Logs", use_container_width=True):
+    # Generate and serve PDF Audit Report
+    alerts_df = alert_logger.get_dataframe(limit=None)
+    scorer = get_scorer()
+    current_score = scorer.compute_score()
+    status_label, _ = scorer.get_status(current_score)
+
+    # Collect existing snapshots
+    existing_snapshots = list(SNAPSHOTS_DIR.glob("*.jpg"))
+    pdf_bytes = generate_pdf_report(
+        candidate_name=candidate_name,
+        session_id=session_id,
+        start_time=st.session_state.session_start,
+        end_time=datetime.datetime.now(),
+        peak_score=max(st.session_state.peak_score, current_score),
+        status_label=status_label,
+        alerts_df=alerts_df,
+        snapshot_paths=existing_snapshots,
+    )
+
+    st.sidebar.download_button(
+        label="📄 Download Audit Report (PDF)",
+        data=pdf_bytes,
+        file_name=f"{session_id}_integrity_report.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
+    if st.sidebar.button("🔄 Reset Session & Logs", use_container_width=True):
         get_scorer().reset()
         alert_logger.clear()
+        st.session_state.session_start = datetime.datetime.now()
+        st.session_state.peak_score = 0.0
+        st.session_state.session_id = f"EXAM-{int(time.time())}"
         st.sidebar.success("Session state & alert logs reset.")
         st.rerun()
 
-    return conf_thresh, yaw_thresh, sustained_secs
+    return conf_thresh, yaw_thresh, sustained_secs, enable_audio
 
 
 def main():
-    st.title("🛡️ ProctorAI - Real-Time AI Exam Proctoring System")
+    init_session_metadata()
+    st.title("🛡️ ProctorAI - Multi-Modal AI Exam Proctoring System")
     st.markdown(
-        "Automated monitoring for exam integrity: detecting cell phones, multiple persons, candidate absence, and sustained distraction."
+        "Comprehensive real-time integrity monitoring: cell phones, multi-person detection, absence, head pose gaze tracking, and acoustic anomaly detection."
     )
 
-    conf_thresh, yaw_thresh, sustained_secs = render_sidebar()
+    conf_thresh, yaw_thresh, sustained_secs, enable_audio = render_sidebar()
     detector = load_detector()
     scorer = get_scorer()
     alert_logger = get_logger()
+    audio_proctor = load_audio_proctor()
+
+    if enable_audio:
+        audio_proctor.start()
+    else:
+        audio_proctor.stop()
 
     # Input Mode Selection
     input_mode = st.radio(
@@ -178,6 +264,7 @@ def main():
     with col_dash:
         st.subheader("📊 Integrity Dashboard")
         score_placeholder = st.empty()
+        audio_placeholder = st.empty()
         alerts_placeholder = st.empty()
         table_placeholder = st.empty()
 
@@ -203,7 +290,7 @@ def main():
                             break
 
                         now = time.time()
-                        # Analyze frame
+                        # Analyze video frame
                         result = detector.analyze(
                             frame=frame,
                             conf_threshold=conf_thresh,
@@ -212,19 +299,30 @@ def main():
                             current_time=now,
                         )
 
+                        active_alerts = list(result.alerts)
+
+                        # Audio anomaly detection check
+                        audio_flagged, current_rms, _ = audio_proctor.check_status()
+                        if enable_audio and audio_flagged:
+                            active_alerts.append("Suspicious audio/speech detected")
+
                         # Update suspicion score
-                        current_score = scorer.add_alerts(result.alerts, current_time=now)
+                        current_score = scorer.add_alerts(active_alerts, current_time=now)
+                        if current_score > st.session_state.peak_score:
+                            st.session_state.peak_score = current_score
+
                         status_label, status_color = scorer.get_status(current_score)
 
                         # Log violations
-                        for alert_item in result.alerts:
+                        for alert_item in active_alerts:
                             alert_logger.log(
                                 alert_type=alert_item,
                                 suspicion_score=current_score,
                                 details=(
                                     f"Persons: {result.person_count}, "
                                     f"Phones: {result.phone_count}, "
-                                    f"Gaze: {result.head_direction}"
+                                    f"Gaze: {result.head_direction}, "
+                                    f"AudioRMS: {current_rms:.3f}"
                                 ),
                                 timestamp=None,
                             )
@@ -236,11 +334,13 @@ def main():
                         # Render Dashboard
                         _render_score_and_alerts(
                             score_placeholder,
+                            audio_placeholder,
                             alerts_placeholder,
                             current_score,
                             status_label,
                             status_color,
-                            result.alerts,
+                            active_alerts,
+                            current_rms if enable_audio else None,
                         )
 
                         # Update Log Table
@@ -250,18 +350,20 @@ def main():
                         time.sleep(0.03)  # approx ~30 fps cap
                 finally:
                     cap.release()
+                    audio_proctor.stop()
         else:
             camera_slot.info("Click 'Start Webcam Monitoring' above to begin.")
-            # Render idle dashboard state
             current_score = scorer.compute_score()
             status_label, status_color = scorer.get_status(current_score)
             _render_score_and_alerts(
                 score_placeholder,
+                audio_placeholder,
                 alerts_placeholder,
                 current_score,
                 status_label,
                 status_color,
                 [],
+                None,
             )
             table_placeholder.dataframe(
                 alert_logger.get_dataframe(limit=10),
@@ -306,11 +408,13 @@ def main():
 
                 _render_score_and_alerts(
                     score_placeholder,
+                    audio_placeholder,
                     alerts_placeholder,
                     current_score,
                     status_label,
                     status_color,
                     result.alerts,
+                    None,
                 )
                 table_placeholder.dataframe(
                     alert_logger.get_dataframe(limit=10),
@@ -320,16 +424,31 @@ def main():
             else:
                 st.info("Upload an image to run detection on static test cases.")
 
+    # Photographic Evidence Gallery
+    st.markdown("---")
+    st.subheader("📸 Captured Evidentiary Snapshots")
+    snapshot_files = list(SNAPSHOTS_DIR.glob("*.jpg"))
+    if snapshot_files:
+        cols = st.columns(min(4, len(snapshot_files)))
+        for i, snap in enumerate(reversed(snapshot_files[-8:])):
+            with cols[i % len(cols)]:
+                img = Image.open(snap)
+                st.image(img, caption=snap.stem, use_container_width=True)
+    else:
+        st.caption("No violation snapshots recorded yet in this session.")
+
 
 def _render_score_and_alerts(
     score_slot,
+    audio_slot,
     alerts_slot,
     score: float,
     status_label: str,
     status_color: str,
     alerts: list,
+    audio_rms: Optional[float] = None,
 ):
-    """Helper to render score cards and active alerts."""
+    """Helper to render score cards, audio meters, and active alerts."""
     tier_class = (
         "status-normal"
         if status_label == "NORMAL"
@@ -351,6 +470,11 @@ def _render_score_and_alerts(
             unsafe_allow_html=True,
         )
         st.progress(min(1.0, max(0.0, score / 100.0)))
+
+    with audio_slot.container():
+        if audio_rms is not None:
+            st.caption(f"🎙️ Microphone Level (RMS): {audio_rms:.4f}")
+            st.progress(min(1.0, max(0.0, audio_rms / 0.15)))
 
     with alerts_slot.container():
         if alerts:

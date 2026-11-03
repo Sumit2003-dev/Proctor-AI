@@ -4,11 +4,17 @@ Usage:
     python train.py --data data/data.yaml --epochs 50 --imgsz 640 --model yolov8n.pt
 """
 
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import argparse
 import sys
 from pathlib import Path
 from typing import Optional
 
+import torch
+torch.set_num_threads(1)
 from ultralytics import YOLO
 
 from config import DEFAULT_MODEL_NAME

@@ -12,12 +12,23 @@ from typing import Dict
 # Base paths
 BASE_DIR = Path(__file__).resolve().parent
 LOGS_DIR = BASE_DIR / "logs"
+SNAPSHOTS_DIR = LOGS_DIR / "snapshots"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_LOG_PATH = LOGS_DIR / "alerts.csv"
 
 # Model paths
 DEFAULT_MODEL_NAME = "yolov8n.pt"
 DATA_CONFIG_PATH = BASE_DIR / "data" / "data.yaml"
+
+
+@dataclass(frozen=True)
+class AudioConfig:
+    """Microphone and acoustic monitoring configuration."""
+
+    DEFAULT_RMS_THRESHOLD: float = 0.04
+    SUSTAINED_AUDIO_SECONDS: float = 1.0
+    SAMPLE_RATE: int = 16000
 
 
 @dataclass(frozen=True)
@@ -43,11 +54,13 @@ class DetectionConfig:
     RIGHT_EYE_OUTER_IDX: int = 263
 
     # Yaw ratio threshold for determining lookaway
-    # (nose.x - eye_mid_x) / (eye_dist + 1e-6)
     DEFAULT_YAW_THRESHOLD: float = 0.25
 
     # Duration threshold: lookaway must be sustained for >= this many seconds
     SUSTAINED_LOOKAWAY_SECONDS: float = 2.0
+
+    # Snapshot evidence cooldown in seconds
+    SNAPSHOT_COOLDOWN_SECONDS: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -60,10 +73,11 @@ class ScoringConfig:
     # Severity weights per alert occurrence
     WEIGHTS: Dict[str, float] = field(
         default_factory=lambda: {
-            "Cell phone detected": 35.0,     # High severity
-            "Multiple people detected": 30.0, # High severity
-            "No person in frame": 20.0,       # Medium severity
-            "Looking away sustained": 15.0,   # Medium severity
+            "Cell phone detected": 35.0,              # High severity
+            "Multiple people detected": 30.0,          # High severity
+            "No person in frame": 20.0,                # Medium severity
+            "Looking away sustained": 15.0,            # Medium severity
+            "Suspicious audio/speech detected": 20.0,  # Medium severity
         }
     )
 
@@ -76,6 +90,7 @@ class ScoringConfig:
 
 
 # Default global instances for convenience
+AUDIO_CONFIG = AudioConfig()
 DETECTION_CONFIG = DetectionConfig()
 SCORING_CONFIG = ScoringConfig()
 

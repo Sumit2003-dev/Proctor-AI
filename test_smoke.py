@@ -9,9 +9,11 @@ import cv2
 import numpy as np
 import torch
 torch.set_num_threads(1)
-from config import DETECTION_CONFIG, SCORING_CONFIG
+from audio_monitor import AudioProctor
+from config import DETECTION_CONFIG, SCORING_CONFIG, SNAPSHOTS_DIR
 from detector import ProctorDetector
 from logger import AlertLogger
+from report import generate_pdf_report
 from scoring import SuspicionScorer
 
 
@@ -85,8 +87,6 @@ def test_pipeline():
     print("[5/5] Testing Temporal Lookaway logic...")
     # Simulate face looking right sustained
     mock_landmarks = [type("MockPoint", (), {"x": 0.5, "y": 0.5})()] * 500
-    # Left eye x=0.4, Right eye x=0.6 -> mid=0.5, dist=0.2
-    # Nose x=0.58 -> yaw_ratio = (0.58 - 0.5) / 0.2 = 0.4 > 0.25 ("Looking Right")
     mock_landmarks[DETECTION_CONFIG.NOSE_TIP_IDX] = type("MockPoint", (), {"x": 0.58, "y": 0.5})()
     mock_landmarks[DETECTION_CONFIG.LEFT_EYE_OUTER_IDX] = type("MockPoint", (), {"x": 0.4, "y": 0.45})()
     mock_landmarks[DETECTION_CONFIG.RIGHT_EYE_OUTER_IDX] = type("MockPoint", (), {"x": 0.6, "y": 0.45})()
@@ -96,8 +96,27 @@ def test_pipeline():
     assert yaw_ratio > 0.25, f"Expected yaw_ratio > 0.25, got {yaw_ratio}"
     print(f"      Head Direction calculation OK: {direction} (yaw_ratio={yaw_ratio:.2f})")
 
+    print("[6/6] Testing Audio Proctor & PDF Audit Report Generator...")
+    audio = AudioProctor()
+    print(f"      Audio Hardware Available: {audio.hardware_available}")
+
+    import datetime
+    pdf_bytes = generate_pdf_report(
+        candidate_name="Test Candidate",
+        session_id="EXAM-TEST-001",
+        start_time=datetime.datetime.now() - datetime.timedelta(minutes=30),
+        end_time=datetime.datetime.now(),
+        peak_score=65.0,
+        status_label="WARNING",
+        alerts_df=df,
+        snapshot_paths=None,
+    )
+    assert pdf_bytes.startswith(b"%PDF"), "Generated document must be a valid PDF file"
+    assert len(pdf_bytes) > 1000, f"PDF too small: {len(pdf_bytes)} bytes"
+    print(f"      PDF Report Generation OK: generated {len(pdf_bytes)} bytes valid PDF.")
+
     detector.close()
-    print("\nALL SMOKE TESTS PASSED SUCCESSFULLY! ALL COMPONENTS OPERATIONAL.")
+    print("\nALL SMOKE TESTS PASSED SUCCESSFULLY! ALL MULTI-MODAL COMPONENTS OPERATIONAL.")
 
 
 if __name__ == "__main__":

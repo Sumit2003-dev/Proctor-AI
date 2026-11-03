@@ -7,8 +7,11 @@ __pycache__/
 .pytest_cache/
 runs/
 *.pt
+models/*.pt
 logs/*.csv
 !logs/.gitkeep
+logs/snapshots/*.jpg
+!logs/snapshots/.gitkeep
 data/
 .streamlit/
 *.egg-info/

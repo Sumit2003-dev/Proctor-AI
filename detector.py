@@ -22,7 +22,7 @@ import torch
 torch.set_num_threads(1)
 from ultralytics import YOLO
 
-from config import DETECTION_CONFIG, DetectionConfig
+from config import DETECTION_CONFIG, DetectionConfig, SNAPSHOTS_DIR
 
 
 @dataclass
@@ -35,6 +35,7 @@ class DetectionResult:
     head_direction: str
     yaw_ratio: float
     lookaway_duration: float
+    snapshot_path: Optional[str] = None
 
 
 class ProctorDetector:
@@ -60,6 +61,7 @@ class ProctorDetector:
         # State tracking for sustained looking away
         self.lookaway_start_time: Optional[float] = None
         self.current_direction: str = "forward"
+        self._last_snapshot_time: float = 0.0
 
     def calculate_head_direction(
         self,
@@ -244,7 +246,18 @@ class ProctorDetector:
             self.lookaway_start_time = None
             head_dir = "No face"
 
-        # ---------------- 3. HUD Overlay ----------------
+        # ---------------- 3. Evidentiary Snapshot Capture ----------------
+        saved_snapshot: Optional[str] = None
+        if alerts and (current_time - self._last_snapshot_time >= self.config.SNAPSHOT_COOLDOWN_SECONDS):
+            self._last_snapshot_time = current_time
+            SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+            clean_tag = alerts[0].lower().replace(" ", "_")[:18]
+            snap_filename = f"{clean_tag}_{int(current_time)}.jpg"
+            snap_full_path = SNAPSHOTS_DIR / snap_filename
+            cv2.imwrite(str(snap_full_path), annotated)
+            saved_snapshot = str(snap_full_path)
+
+        # ---------------- 4. HUD Overlay ----------------
         # Top-left alert summary
         y_offset = 35
         for alert_msg in alerts:
@@ -293,6 +306,7 @@ class ProctorDetector:
             head_direction=head_dir,
             yaw_ratio=yaw_ratio,
             lookaway_duration=lookaway_elapsed,
+            snapshot_path=saved_snapshot,
         )
 
     def close(self) -> None:
