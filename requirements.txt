@@ -7,3 +7,4 @@ numpy>=1.24.0
 pillow>=10.0.0
 sounddevice>=0.4.6
 reportlab>=4.0.0
+fiftyone>=1.0.0

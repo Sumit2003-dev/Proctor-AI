@@ -129,7 +129,16 @@ All parameters are centrally managed in `config.py` and can also be tuned intera
 
 ## 🧠 Fine-Tuning YOLOv8 on Custom Datasets
 
-To train YOLOv8 on custom phone detection or classroom cheating datasets (e.g. from Roboflow Universe):
+### Option A: Using FiftyOne Zoo (Real-World COCO & Open Images)
+Curate real-world images of candidates holding cell phones and train YOLOv8 directly:
+
+```bash
+pip install fiftyone ultralytics
+python train_fiftyone.py --max-samples 80 --epochs 10 --imgsz 640
+```
+
+### Option B: Using Roboflow / Custom Datasets
+To train YOLOv8 on custom phone detection or classroom cheating datasets:
 
 1. Export your dataset in **YOLOv8 format** and place it in `data/` with `data/data.yaml`.
 2. Run fine-tuning:
