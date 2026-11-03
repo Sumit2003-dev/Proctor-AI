@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+runs/
+*.pt
+logs/*.csv
+!logs/.gitkeep
+data/
+.streamlit/
+*.egg-info/
+dist/
+build/
+
