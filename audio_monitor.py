@@ -128,3 +128,4 @@ class AudioProctor:
         """
         with self.lock:
             return self.is_speech_flagged, self.current_rms, self.hardware_available
+

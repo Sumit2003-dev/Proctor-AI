@@ -11,12 +11,12 @@
 
 ## 🎯 Key Detection Features
 
-1. **Cell Phone in Frame**: Flags unauthorized mobile devices via YOLOv8 (`cell_phone`).
+1. **Cell Phone in Frame**: Flags unauthorized mobile devices via YOLOv8 (`cell_phone` class).
 2. **Multiple People in Frame**: Flags presence of unauthorized secondary persons (count > 1).
 3. **Absence Detection**: Flags when the candidate leaves the camera view (person count = 0).
-4. **Sustained Lookaway (Head Yaw Estimation)**: Estimates horizontal head pose via MediaPipe Face Mesh key landmarks (nose tip `1`, outer eye corners `33` and `263`). To eliminate false positives from quick natural glances, violations are triggered **only if looking away is sustained for $> 2.0$ seconds**.
-5. **Acoustic / Speech Monitoring**: Analyzes microphone RMS energy in real time to detect candidate speaking, whispering, or external verbal coaching.
-6. **Rolling 30-Second Suspicion Score**: Dynamically calculates a normalized $(0 - 100)$ threat score over a sliding 30-second window, categorized into **Normal**, **Warning**, and **High Risk**.
+4. **3D Head-Pose Estimation (`cv2.solvePnP`)**: Solves the Perspective-n-Point problem using 6 canonical anthropometric 3D facial landmarks (nose tip `1`, chin `152`, eye outer corners `33` & `263`, mouth corners `61` & `291`). Decomposes the 3D rotation matrix into **Yaw**, **Pitch**, and **Roll** in real angular degrees, projects a 3D gaze ray from the nose outward, and flags sustained distraction ($> 2.0$s) to eliminate false positives.
+5. **Calibrated Cheating Probability & Time Decay**: Replaces naive staircase scoring with an exponential time-decay model ($t_{1/2} = 15$s) and a logistic sigmoid mapping yielding a continuous threat index $(0 - 100)$ and a calibrated probability metric $P(\text{Cheating}) \in [0\%, 100\%]$.
+6. **Acoustic / Speech Monitoring**: Analyzes microphone RMS energy in real time to detect candidate speaking, whispering, or external verbal coaching.
 7. **Official PDF Audit Reports**: Automatically generates an executive-ready post-exam audit report with session metrics, full incident logs, and embedded photographic evidence snapshots.
 
 ---

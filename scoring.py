@@ -1,9 +1,13 @@
-"""Suspicion scoring engine with rolling window evaluation.
+"""Calibrated risk scoring engine with rolling-window exponential decay.
 
-Maintains alert history over a configured time window (default 30 seconds)
-and computes a normalized weighted suspicion score (0-100).
+Maintains alert history over a configured sliding window (default 30 seconds),
+prunes expired records and cooldown state, and calculates:
+1. Time-decayed continuous suspicion index (0 - 100).
+2. Calibrated Cheating Probability P(Cheating in [0.0, 1.0]).
+3. Risk categorization tiers: NORMAL, WARNING, HIGH RISK.
 """
 
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -21,21 +25,30 @@ class AlertRecord:
 
 
 class SuspicionScorer:
-    """Computes a rolling-window weighted suspicion score for exam proctoring."""
+    """Computes a calibrated time-decayed suspicion score and cheating probability."""
 
     def __init__(self, config: ScoringConfig = SCORING_CONFIG) -> None:
         self.config = config
         self.history: Deque[AlertRecord] = deque()
         self._last_alert_logged_time: Dict[str, float] = {}
-        # Min cooldown in seconds between recording the same event to avoid
-        # 30fps burst inflation within the same second
-        self.cooldown_seconds: float = 1.0
+        # Precompute decay lambda from half-life: lambda = ln(2) / half_life
+        self._decay_lambda = math.log(2.0) / max(1.0, self.config.DECAY_HALF_LIFE_SECONDS)
 
     def prune_old_records(self, current_time: float) -> None:
-        """Removes records older than the rolling window length."""
+        """Removes expired alerts and cleans up stale cooldown timestamps."""
         cutoff = current_time - self.config.WINDOW_SECONDS
+
+        # 1. Prune history records outside sliding window
         while self.history and self.history[0].timestamp < cutoff:
             self.history.popleft()
+
+        # 2. Prune stale cooldown timestamps to prevent indefinite memory/state leaks
+        expired_keys = [
+            k for k, t in self._last_alert_logged_time.items()
+            if (current_time - t) > self.config.WINDOW_SECONDS
+        ]
+        for k in expired_keys:
+            del self._last_alert_logged_time[k]
 
     def add_alerts(self, alerts: List[str], current_time: float = None) -> float:
         """Registers active alerts and updates the suspicion score.
@@ -60,7 +73,8 @@ class SuspicionScorer:
 
             if matched_key:
                 last_time = self._last_alert_logged_time.get(matched_key, 0.0)
-                if current_time - last_time >= self.cooldown_seconds:
+                # Apply per-event cooldown
+                if current_time - last_time >= self.config.EVENT_COOLDOWN_SECONDS:
                     self._last_alert_logged_time[matched_key] = current_time
                     weight = self.config.WEIGHTS[matched_key]
                     self.history.append(
@@ -75,13 +89,39 @@ class SuspicionScorer:
         return self.compute_score(current_time)
 
     def compute_score(self, current_time: float = None) -> float:
-        """Calculates current suspicion score from active window records."""
+        """Calculates time-decayed suspicion score from active window records."""
         if current_time is None:
             current_time = time.time()
         self.prune_old_records(current_time)
 
-        raw_score = sum(record.weight for record in self.history)
+        # Exponential decay: recent violations in last few seconds carry maximum weight;
+        # older violations smoothly fade rather than abruptly falling off a cliff.
+        raw_score = 0.0
+        for record in self.history:
+            delta_t = max(0.0, current_time - record.timestamp)
+            decay_factor = math.exp(-self._decay_lambda * delta_t)
+            raw_score += record.weight * decay_factor
+
         return min(self.config.MAX_SCORE, float(raw_score))
+
+    def get_cheating_probability(self, score: float = None) -> float:
+        """Computes calibrated probability of cheating P(Cheating) in [0.0, 1.0].
+
+        Uses a calibrated logistic sigmoid function parameterized by
+        center threshold theta and scale beta.
+        """
+        if score is None:
+            score = self.compute_score()
+
+        if score <= 0.0:
+            return 0.0
+
+        # Logistic sigmoid mapping: 1 / (1 + exp(-(score - theta) / beta))
+        exponent = -(score - self.config.SIGMOID_CENTER_THETA) / max(1.0, self.config.SIGMOID_SCALE_BETA)
+        # Numerical stability clamp
+        exponent = max(-20.0, min(20.0, exponent))
+        prob = 1.0 / (1.0 + math.exp(exponent))
+        return float(prob)
 
     def get_status(self, score: float = None) -> Tuple[str, str]:
         """Returns risk category name and hex color based on score."""
@@ -96,7 +136,6 @@ class SuspicionScorer:
             return "HIGH RISK", "#dc3545" # Red
 
     def reset(self) -> None:
-        """Clears all historical alerts."""
+        """Clears all historical alerts and cooldown trackers."""
         self.history.clear()
         self._last_alert_logged_time.clear()
-
