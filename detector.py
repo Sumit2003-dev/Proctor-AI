@@ -58,15 +58,29 @@ class ProctorDetector:
 
     def __init__(
         self,
-        model_path: str = DETECTION_CONFIG.DEFAULT_MODEL_NAME if hasattr(DETECTION_CONFIG, "DEFAULT_MODEL_NAME") else "yolov8n.pt",
+        model_path: str = "yolov8n.pt",
         config: DetectionConfig = DETECTION_CONFIG,
     ) -> None:
         self.config = config
 
-        # Load best fine-tuned model if available, otherwise baseline
+        # Load model with fallback to yolov8n.pt
         if not os.path.exists(model_path):
             model_path = "yolov8n.pt"
         self.model = YOLO(model_path)
+        self.model_path = model_path
+
+        # Dynamically resolve class IDs from model.names instead of hardcoding
+        self.person_class_ids = [
+            cls_id for cls_id, name in self.model.names.items()
+            if "person" in name.lower()
+        ]
+        self.phone_class_ids = [
+            cls_id for cls_id, name in self.model.names.items()
+            if any(k in name.lower() for k in ["phone", "cell", "mobile"])
+        ]
+        print(f"[Detector] Loaded model: {model_path}")
+        print(f"[Detector] Detected class mapping: Person IDs={self.person_class_ids}, Phone IDs={self.phone_class_ids}")
+        print(f"[Detector] Full model.names: {self.model.names}")
 
         # Initialize MediaPipe Face Mesh
         self.mp_face_mesh = mp.solutions.face_mesh
@@ -255,25 +269,29 @@ class ProctorDetector:
             for box in results.boxes:
                 cls_id = int(box.cls[0].item())
                 conf = float(box.conf[0].item())
+                label = self.model.names.get(cls_id, f"class_{cls_id}")
+
+                # Raw detection diagnostic print
+                print(f"DETECTION: {label} (ID: {cls_id}) | Conf: {conf:.3f}")
 
                 if conf < conf_threshold:
                     continue
 
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
 
-                if cls_id in self.config.PERSON_CLASS_IDS:
+                if cls_id in self.person_class_ids:
                     person_count += 1
                     cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     cv2.putText(
                         annotated,
-                        f"Person {conf:.2f}",
+                        f"{label} {conf:.2f}",
                         (x1, max(20, y1 - 8)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.55,
                         (0, 255, 0),
                         2,
                     )
-                elif cls_id in self.config.PHONE_CLASS_IDS:
+                elif cls_id in self.phone_class_ids:
                     phone_count += 1
                     cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 3)
                     cv2.putText(

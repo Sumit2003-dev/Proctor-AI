@@ -83,9 +83,9 @@ st.markdown(
 
 
 @st.cache_resource
-def load_detector() -> ProctorDetector:
-    """Loads and caches the ProctorDetector instance."""
-    return ProctorDetector(model_path=DEFAULT_MODEL_NAME, config=DETECTION_CONFIG)
+def load_detector(model_choice: str = "yolov8n.pt") -> ProctorDetector:
+    """Loads and caches the ProctorDetector instance for the selected model."""
+    return ProctorDetector(model_path=model_choice, config=DETECTION_CONFIG)
 
 
 @st.cache_resource
@@ -134,6 +134,15 @@ def render_sidebar():
     candidate_name = st.sidebar.text_input("Candidate Name", value="John Doe")
     session_id = st.session_state.get("session_id", "EXAM-1001")
     st.sidebar.caption(f"Session ID: `{session_id}`")
+
+    # Model Weights Selection
+    st.sidebar.subheader("YOLO Model Architecture")
+    model_opts = ["yolov8n.pt (COCO Pretrained - Real Humans & Phones)"]
+    if Path("models/best.pt").exists():
+        model_opts.append("models/best.pt (Fine-Tuned Custom Dataset)")
+
+    selected_model_opt = st.sidebar.selectbox("Active Model Weights", model_opts, index=0)
+    model_path = "models/best.pt" if "best.pt" in selected_model_opt else "yolov8n.pt"
 
     # 3D Head-Pose & Vision Sensitivity Sliders
     st.sidebar.subheader("3D Vision Sensitivity")
@@ -235,7 +244,7 @@ def render_sidebar():
         st.sidebar.success("Session state & alert logs reset.")
         st.rerun()
 
-    return conf_thresh, yaw_thresh, sustained_secs, enable_audio
+    return model_path, conf_thresh, yaw_thresh, sustained_secs, enable_audio
 
 
 def main():
@@ -245,8 +254,8 @@ def main():
         "Automated exam integrity monitoring powered by **YOLOv8 fine-tuned object detection**, **3D Head-Pose Estimation (`cv2.solvePnP`)**, and **Acoustic Speech Analysis**."
     )
 
-    conf_thresh, yaw_thresh, sustained_secs, enable_audio = render_sidebar()
-    detector = load_detector()
+    model_path, conf_thresh, yaw_thresh, sustained_secs, enable_audio = render_sidebar()
+    detector = load_detector(model_choice=model_path)
     scorer = get_scorer()
     alert_logger = get_logger()
     audio_proctor = load_audio_proctor()

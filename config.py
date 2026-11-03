@@ -18,7 +18,7 @@ SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_LOG_PATH = LOGS_DIR / "alerts.csv"
 
 # Model paths
-DEFAULT_MODEL_NAME = "models/best.pt" if (BASE_DIR / "models" / "best.pt").exists() else "yolov8n.pt"
+DEFAULT_MODEL_NAME = "yolov8n.pt"
 DATA_CONFIG_PATH = BASE_DIR / "data" / "data.yaml"
 
 
